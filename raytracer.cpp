@@ -43,7 +43,7 @@ struct XYZ
 			else if (d[n]>1.0) d[n]=1.0;
 		}
 	}
-	void ClampWithDestruction()
+	void ClampWithDesaturation()
 	{
 		double l=Luma(),sat=1.0;
 		if (l>1.0) {d[0]=d[1]=d[2]=1.0;return;}
@@ -69,7 +69,7 @@ struct Matrix
 			{{cxcz*Sy+sxsz,cxsz*Sy-sxcz,Cx*Cy}} }};
 		*this=result;
 	}
-	void transform(XYZ &vec)
+	void Transform(XYZ &vec)
 	{
 		vec.Set(m[0].Dot(vec),m[1].Dot(vec),m[2].Dot(vec));
 	}
@@ -105,7 +105,7 @@ Spheres[] = {
     	{ {{-30,30,15}}, 11},
     	{ {{15,-30,30}}, 6},
     	{ {{30,15,-30}}, 6}
-}
+};
 
 const struct LightSource
 {XYZ location,colour;}
@@ -151,7 +151,7 @@ int RayFindObstacle
 		HitNormal = (HitLoc-Spheres[i].center)*(1/r);
 
 	}}
-	{for (unsigned i=0, i<NumPlanes,++i)
+	{for (unsigned i=0; i<NumPlanes;++i)
 	{
 		double DV =-Planes[i].normal.Dot(dir);
 		if (DV>1e-6) continue;
@@ -229,9 +229,182 @@ void RayTrace(XYZ &resultcolour, const XYZ &eye, const XYZ &dir,int k)
 	}
 };
 
+/*** Colour ***/
+
+const unsigned CandCount = 64;
+const double Gamma = 2.2, Ungamma = 1.0 / Gamma;
+unsigned Dither8x8[8][8];
+XYZ Pal[16], PalG[16];
+double luma[16];
+void InitDither()
+{
+    // We will use the default 16-colour EGA/VGA palette.
+ 
+    for(unsigned i=0; i<16; ++i)
+    {
+        static const char s[16*3] =
+            {0,0,0, 0,0,42, 0,42,0, 0,42,42, 42,0,0, 42,0,42, 42,21,0, 21,21,21,
+             42,42,42, 21,21,63, 21,63,21, 21,63,63, 63,21,21, 63,21,63, 63,63,21, 63,63,63};
+        Pal[i].Set(s[i*3+0],s[i*3+1],s[i*3+2]);
+
+        Pal[i] *= 1/63.0;
+        PalG[i] = Pal[i].Pow(Gamma);
+        luma[i] = Pal[i].Luma();
+    }
+    // Create bayer dithering matrix, adjusted for candidate count
+    for(unsigned y=0; y<8; ++y)
+        for(unsigned x=0; x<8; ++x)
+        {
+            unsigned i = x ^ y, j;
+            j = (x & 4)/4u + (x & 2)*2u + (x & 1)*16u;
+            i = (i & 4)/2u + (i & 2)*4u + (i & 1)*32u;
+            Dither8x8[y][x] = (j+i)*CandCount/64u;
+        }
+}
 
 /*** main ***/
 
-int main(){
-	return 0;
+int main()
+{
+
+    InitDither();
+    InitAreaLightVectors();
+    XYZ camangle      = { {0,0,0} };
+    XYZ camangledelta = { {-.005, -.011, -.017} };
+    XYZ camlook       = { {0,0,0} };
+    XYZ camlookdelta  = { {-.001, .005, .004} };
+
+    double zoom = 46.0, zoomdelta = 0.99;
+    double contrast = 32, contrast_offset = -0.17;
+
+    const unsigned W = 680, H = 480;
+
+    for(unsigned frameno=0; frameno<2048; ++frameno)
+    {
+        fprintf(stderr, "Begins frame %u; contrast %g, contrast offset %g\n",
+            frameno,contrast,contrast_offset);
+
+        gdImagePtr im = gdImageCreate(W,H);
+	
+        for(unsigned p=0; p<16; ++p)
+            gdImageColorAllocate(im, (int)(Pal[p].d[0]*255+0.5),
+                                     (int)(Pal[p].d[1]*255+0.5),
+                                     (int)(Pal[p].d[2]*255+0.5));
+				     
+
+        // Put camera between the central sphere and the walls
+        XYZ campos = { { 0.0, 0.0, 16.0} };
+        // Rotate it around the center
+        Matrix camrotatematrix, camlookmatrix;
+        camrotatematrix.InitRotate(camangle);
+        camrotatematrix.Transform(campos);
+        camlookmatrix.InitRotate(camlook);
+
+        // Determine the contrast ratio for this frame's pixels
+        double thisframe_min = 100;
+        double thisframe_max = -100;
+
+      #pragma omp parallel for collapse(2)
+        for(unsigned y=0; y<H; ++y)
+            for(unsigned x=0; x<W; ++x)
+            {
+                XYZ camray = { { x / double(W) - 0.5,
+                                 y / double(H) - 0.5,
+                                 zoom } };
+                camray.d[0] *= 4.0/3; // Aspect ratio correction
+                camray.Normalise();
+                camlookmatrix.Transform(camray);
+                XYZ campix;
+                RayTrace(campix, campos, camray, MAXTRACE);
+                campix *= 0.5;
+              #pragma omp critical
+              {
+                // Update frame luminosity info for automatic contrast adjuster
+                double lum = campix.Luma();
+                #pragma omp flush(thisframe_min,thisframe_max)
+                if(lum < thisframe_min) thisframe_min = lum;
+                if(lum > thisframe_max) thisframe_max = lum;
+                #pragma omp flush(thisframe_min,thisframe_max)
+              }
+                // Exaggerate the colours to bring contrast better forth
+                campix = (campix + contrast_offset) * contrast;
+                // Clamp, and compensate for display gamma (for dithering)
+                campix.ClampWithDesaturation();
+                XYZ campixG = campix.Pow(Gamma);
+                XYZ qtryG = campixG;
+                // Create candidate for dithering
+                unsigned candlist[CandCount];
+                for(unsigned i=0; i<CandCount; ++i)
+                {
+                    unsigned k = 0;
+                    double b = 1e6;
+                    // Find closest match from palette
+                    for(unsigned j=0; j<16; ++j)
+                    {
+                        double a = (qtryG - PalG[j]).Squared();
+                        if(a < b) { b = a; k = j; }
+                    }
+                    candlist[i] = k;
+                    if(i+1 >= CandCount) break;
+                    // Compensate for error
+                    qtryG += (campixG - PalG[k]);
+                    qtryG.Clamp();
+                }
+                // Order candidates by luminosity
+                // using insertion sort.
+                for(unsigned j=1; j<CandCount; ++j)
+                {
+                    unsigned k = candlist[j], i;
+                    for(i=j; i>=1 && luma[candlist[i-1]] > luma[k]; --i)
+                        candlist[i] = candlist[i-1];
+                    candlist[i] = k;
+                }
+                unsigned colour = candlist[Dither8x8[x & 7][y & 7]];
+		//int colour = gdTrueColor((int) campix.d[0]*255,(int) campix.d[1]*255, (int) campix.d[2]*255);
+                gdImageSetPixel(im, x,y, colour);
+            }
+
+        char Buf[64]; sprintf(Buf, "trace%d.png", frameno);
+        fprintf(stderr, "Writing %s...\n", Buf);
+        FILE* fp = fopen(Buf, "wb");
+        gdImagePng(im, fp);
+        gdImageDestroy(im);
+        fclose(fp);
+
+
+        // Tweak coordinates / camera parameters for the next frame
+        double much = 1.0;
+
+        // In the beginning, do some camera action (play with zoom)
+        if(zoom <= 1.1)
+            zoom = 1.1;
+        else
+        {
+            if(zoom > 40) { if(zoomdelta > 0.95) zoomdelta -= 0.001; }
+            else if(zoom < 3) { if(zoomdelta < 0.99) zoomdelta += 0.001; }
+            zoom *= zoomdelta;
+            much = 1.1 / pow(zoom/1.1, 3);
+        }
+
+        // Update the rotation angle
+        camlook  += camlookdelta * much;
+        camangle += camangledelta * much;
+
+        // Dynamically readjust the contrast based on the contents
+        // of the last frame
+        double middle = (thisframe_min + thisframe_max) * 0.5;
+        double span   = (thisframe_max - thisframe_min);
+        thisframe_min = middle - span*0.60; // Avoid dark tones
+        thisframe_max = middle + span*0.37; // Emphasize bright tones
+        double new_contrast_offset = -thisframe_min;
+        double new_contrast        = 1 / (thisframe_max - thisframe_min);
+        // Avoid too abrupt changes, though
+        double l = 0.85;
+        if(frameno == 0) l = 0.7;
+        contrast_offset = (contrast_offset*l + new_contrast_offset*(1.0-l));
+        contrast        = (contrast*l + new_contrast*(1.0-l));
+    }
+
+//    _asm { mov ax, 0x03; int 0x10 };
+    // Set 80x25 text mode.
 }
