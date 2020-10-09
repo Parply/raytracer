@@ -55,6 +55,96 @@ struct XYZ
 	}
 };
 
+struct Matrix
+{
+	XYZ m[3];
+	void InitRotate(const XYZ &angle)
+	{
+		double Cx = cos(angle.d[0]), Cy = cos(angle.d[1]), Cz = cos(angle.d[2]);
+		double Sx = sin(angle.d[0]), Sy = sin(angle.d[1]), Sz = sin(angle.d[2]);
+		double sxsz=Sx*Sz,cxsz=Cx*Sz,cxcz=Cx*Cz,sxcz=Sx*Sz;
+		Matrix result = {{ {{Cy*Cz,Cy*Sz,-Sy}},
+			{{sxcz*Sy-cxsz,sxsz*Sy+cxcz,Sx*Cy}},
+			{{cxcz*Sy+sxsz,cxsz*Sy-sxcz,Cx*Cy}} }};
+		*this=result;
+	}
+	void transform(XYZ &vec)
+	{
+		vec.Set(m[0].Dot(vec),m[1].Dot(vec),m[2].Dot(vec));
+	}
+};
+
+/*** Walls and Spheres ***/
+
+// Planes/walls represented by a normal vector and a distance
+const struct Plane
+{XYZ normal;double offset;}
+
+// Define some for scene
+
+Planes[] = {
+	{ {{0,0,-1}}, -30 },
+	{ {{0,1,0}}, -30 },
+	{ {{0,-1,0}}, -30 },
+	{ {{1,0,0}}, -30 },
+	{ {{0,0,1}}, -30 },
+	{ {{-1,0,0}}, -30 }
+};
+
+const struct Sphere
+{ XYZ center; double radius; }
+
+// Define some spheres
+Spheres[] = {
+	{ {{0,0,0}}, 7 },
+    	{ {{19.4, -19.4, 0}}, 2.1 },
+    	{ {{-19.4, 19.4, 0}}, 2.1 },
+    	{ {{13.1, 5.1, 0}}, 1.1 },
+    	{ {{ -5.1, -13.1, 0}}, 1.1 },
+    	{ {{-30,30,15}}, 11},
+    	{ {{15,-30,30}}, 6},
+    	{ {{30,15,-30}}, 6}
+}
+
+const struct LightSource
+{XYZ location,colour;}
+
+Lights[] =
+{
+    { {{-28,-14, 3}}, {{.4, .51, .9}} },
+    { {{-29,-29,-29}}, {{.95, .1, .1}} },
+    { {{ 14, 29,-14}}, {{.8, .8, .8}} },
+    { {{ 29, 29, 29}}, {{1,1,1}} },
+    { {{ 28,  0, 29}}, {{.5, .6,  .1}} }
+};
+
+#define NElems(x) sizeof(x)/sizeof(*x)
+const unsigned
+	NumPlanes = NElems(Planes),
+	NumSpheres = NElems(Spheres),
+	NumLights = NElems(Lights),
+	MAXTRACE = 6;
+
+/*** raytracing ***/
+
+int RayFindObstacle 
+	(const XYZ &eye, const XYZ &dir, double &HitDist,
+	 int &HitIndex, XYZ & HitLoc, XYZ &HitNormal)
+{
+	int HitType=-1;
+	for (unsigned i=0;i<NumSpheres;++i)
+	{
+		XYZ V (eye-Spheres[i].center);
+		double r=Spheres[i].radius,
+		       DV = dir.Dot(V),
+		       D2 = dir.Squared(),
+		       SQ = DV*DV - D2*(V.Squared()-r*r);
+		// if ray coincides with sqhere
+		if (SQ<1e-6) continue;
+
+
+	}
+}
 
 /*** main ***/
 
