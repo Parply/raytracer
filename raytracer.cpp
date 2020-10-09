@@ -1,5 +1,6 @@
 /*** header ***/
 
+#include <cstdlib>
 #include <stdio.h>
 #include <math.h>
 #include <gd.h>
@@ -132,19 +133,52 @@ int RayFindObstacle
 	 int &HitIndex, XYZ & HitLoc, XYZ &HitNormal)
 {
 	int HitType=-1;
-	for (unsigned i=0;i<NumSpheres;++i)
+	{for (unsigned i=0;i<NumSpheres;++i)
 	{
 		XYZ V (eye-Spheres[i].center);
 		double r=Spheres[i].radius,
 		       DV = dir.Dot(V),
 		       D2 = dir.Squared(),
 		       SQ = DV*DV - D2*(V.Squared()-r*r);
-		// if ray coincides with sqhere
+		// if ray coincides with sphere
 		if (SQ<1e-6) continue;
+		double SQt = sqrt(SQ),
+		       Dist = dmin(-DV-SQt, SQt-DV)/D2;
+		if (Dist <1e-6||Dist>=HitDist) continue;
+		HitType=1; HitIndex=i;
+		HitDist=Dist;
+		HitLoc = eye +(dir*HitDist);
+		HitNormal = (HitLoc-Spheres[i].center)*(1/r);
 
+	}}
+	{for (unsigned i=0, i<NumPlanes,++i)
+	{
+		double DV =-Planes[i].normal.Dot(dir);
+		if (DV>1e-6) continue;
+		double D2=Planes[i].normal.Dot(eye),
+		       Dist =(D2+Planes[i].offset)/DV;
+		if (Dist<1e-6||Dist>=HitDist) continue;
+		HitType=0;HitIndex=i;
+		HitDist=Dist;
+		HitLoc=eye+(dir*HitDist);
+		HitNormal=-Planes[i].normal;
 
-	}
+	}}
+	return HitType;
+};
+const unsigned NumAreaLightVectors=20;
+XYZ AreaLightVectors[NumAreaLightVectors];
+void InitAreaLightVectors()
+{
+	// smooth shadows with cloud of lighsources around point
+	for (unsigned i=0;i<NumAreaLightVectors;++i)
+		for (unsigned n=0;n<3;++n)
+			AreaLightVectors[i].d[n]= 2.0*(rand()/double(RAND_MAX)-0.5);
 }
+
+//Shoot camera rays
+
+
 
 /*** main ***/
 
