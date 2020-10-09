@@ -177,7 +177,57 @@ void InitAreaLightVectors()
 }
 
 //Shoot camera rays
-
+void RayTrace(XYZ &resultcolour, const XYZ &eye, const XYZ &dir,int k)
+{
+	double HitDist=1e6;
+	XYZ HitLoc,HitNormal;
+	int HitIndex,HitType;
+	HitType=RayFindObstacle(eye, dir, HitDist, HitIndex, HitLoc, HitNormal);
+	// if hits an obs
+	if (HitType!=-1)
+	{
+		XYZ DiffuseLight={{0,0,0}},SpecularLight={{0,0,0}};
+		XYZ Pigment {{1,0.98,0.98}};
+		for (unsigned i=0;i<NumLights;++i)
+			for (unsigned j=0;j<NumAreaLightVectors;++j)
+			{
+				XYZ V((Lights[i].location+AreaLightVectors[j])-HitLoc);
+				double LightDist =V.Len();
+				V.Normalise();
+				double DiffuseEffect=HitNormal.Dot(V)/(double)NumAreaLightVectors;
+				double Attention =(1.0+pow(LightDist/34.0,2.0));
+				DiffuseEffect /= Attention;
+				if (DiffuseEffect>1e-3)
+				{
+					double ShadowDist = LightDist-1e-4;
+					XYZ a,b;
+					int q,t = RayFindObstacle(HitLoc+V*1e-4,V, ShadowDist, q, a, b);
+					if (t==-1)
+						DiffuseLight += Lights[i].colour*DiffuseEffect;
+				}
+			}
+		if (k>1)
+		{
+			XYZ V(-dir);V.MirrorAround(HitNormal);
+			RayTrace(SpecularLight, HitLoc+V*1e-4, V, k-1);
+		}
+		switch (HitType) {
+			case 0: //Plane
+				DiffuseLight *= 0.9;
+				SpecularLight *=0.5;
+				switch (HitIndex % 3) {
+					case 0: Pigment.Set(0.9, 0.7, 0.6); break;
+					case 1: Pigment.Set(0.6, 0.7, 0.7); break;
+					case 2: Pigment.Set(0.5, 0.8, 0.3); break;
+				}
+				break;
+			case 1: //sphere
+				DiffuseLight*=1.0;
+				SpecularLight*=0.34;
+		}
+		resultcolour =(DiffuseLight+SpecularLight)*Pigment;
+	}
+};
 
 
 /*** main ***/
