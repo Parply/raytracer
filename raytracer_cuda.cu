@@ -1,5 +1,6 @@
 /*** header ***/
 
+
 #include <cstdlib>
 #include <stdio.h>
 #include <math.h>
@@ -82,7 +83,7 @@ struct Matrix
 /*** Walls and Spheres ***/
 extern "C" {
 // Planes/walls represented by a normal vector and a distance
-const struct Plane
+typedef struct Plane
 {XYZ normal;double offset;} Pl;
 
 // Define some for scene
@@ -96,7 +97,7 @@ const Pl PlanesPreinit[] = {
 	{ {{-1,0,0}}, -30 }
 };
 __device__ __constant__ Pl Planes[sizeof(PlanesPreinit)/sizeof(*PlanesPreinit)];
-const struct Sphere
+typedef struct Sphere
 { XYZ center; double radius; } Sp;
 
 // Define some spheres
@@ -112,7 +113,7 @@ const Sp SpheresPreinit[] = {
 };
 __device__ __constant__ Sp Spheres[sizeof(SpheresPreinit)/sizeof(*SpheresPreinit)];
 
-const struct LightSource
+typedef struct LightSource
 {XYZ location,colour;} Ls;
 
 const Ls LightsPreinit[] =
@@ -311,12 +312,105 @@ void InitDither()
 #endif
 
 /*** main ***/
+const unsigned W = 1920, H = 1080;
+const unsigned Threads = 256;
+const unsigned Blocks  = (W*H + (Threads-1)) / Threads;
+
+void __global__ RenderScreen(
+		#ifdef DO_DITHER
+		unsigned char* results,
+		#else
+		unsigned* results
+		#endif
+		double camanglex,double camangley,double camanglez,
+                double camlookx,double camlooky,double camlookz,
+                double zoom,
+                double contrast,double contrast_offset)
+{
+	unsigned pixno = blockIdx.x * blockDim.x + threadIdx.x;
+	if(pixno >= W*H) return;
+	XYZ camangle = { { camanglex,camangley,camanglez } };
+    	XYZ camlook = { { camlookx,camlooky,camlookz } };
+    	XYZ campos = { { 0.0, 0.0, 16.0} };
+	Matrix camrotatematrix, camlookmatrix;
+    	camrotatematrix.InitRotate(camangle);
+    	camrotatematrix.Transform(campos);
+    	camlookmatrix.InitRotate(camlook);
+	const unsigned x = pixno % W;
+    	const unsigned y = pixno / W;
+    	XYZ camray = { { x / double(W) - 0.5,
+                     	y / double(H) - 0.5,
+                     	zoom } };
+    	camray.d[0] *= double(W)/double(H); // Aspect ratio correction
+	camray.Normalize();
+    	camlookmatrix.Transform(camray);
+    	XYZ campix;
+    	RayTrace(campix, campos, camray, MAXTRACE);
+    	campix *= 0.5;
+    	resluma[y*W+x] = campix.Luma();
+    	// Exaggerate the colors to bring contrast better forth
+    	campix = (campix + contrast_offset) * contrast;
+    	// Clamp, and compensate for display gamma (for dithering)
+    	campix.ClampWithDesaturation();
+    	XYZ campixG = campix.Pow(Gamma);
+	#ifdef DO_DITHER
+    	XYZ qtryG = campixG;
+    	// Create candidate for dithering
+    	unsigned candlist[CandCount];
+    	for(unsigned i=0; i<CandCount; ++i)
+    	{
+        	unsigned k = 0;
+        	double b = 1e6;
+        	// Find closest match from palette
+        	for(unsigned j=0; j<16; ++j)
+        	{
+            		double a = (qtryG - PalG[j]).Squared();
+            		if(a < b) { b = a; k = j; }
+        	}
+        	candlist[i] = k;
+        	if(i+1 >= CandCount) break;
+        	// Compensate for error
+        	qtryG += (campixG - PalG[k]);
+        	qtryG.Clamp();
+    	}
+    	// Order candidates by luminosity
+    	// using insertion sort.
+    	for(unsigned j=1; j<CandCount; ++j)
+    	{
+        	unsigned k = candlist[j], i;
+        	for(i=j; i>=1 && luma[candlist[i-1]] > luma[k]; --i)
+	            candlist[i] = candlist[i-1];
+        candlist[i] = k;
+    	}
+    	// Draw pixel (use BIOS).
+    	results[y*W+x] = candlist[Dither8x8[x & 7][y & 7]];
+	#else
+    	results[y*W+x] = (unsigned(campixG.d[0] * 255) << 16)
+                   + (unsigned(campixG.d[1] * 255) << 8)
+                   + (unsigned(campixG.d[2] * 255) << 0);
+	#endif
+	}
+}
+
+
 
 int main()
 {
 
-    InitDither();
     InitAreaLightVectors();
+    #define PreInit(symbol, from) checkCudaErrors(cudaMemcpyToSymbol(symbol, &from, sizeof(from)))
+    PreInit(ArealightVectors, ArealightVectorsPreinit);
+    #ifdef DO_DITHER
+    InitDither();
+    PreInit(PalG, PalG_init);
+    PreInit(luma, lumainit);
+    PreInit(Dither8x8, Dither8x8_init);
+    #endif
+    PreInit(Planes, PlanesPreinit);
+    PreInit(Spheres, SpheresPreinit);
+    PreInit(Lights, LightsPreinit);
+    #undef PreInit
+    checkCudaErrors(cudaDeviceSetLimit(cudaLimitStackSize,2500));
     XYZ camangle      = { {0,0,0} };
     XYZ camangledelta = { {-.005, -.011, -.017} };
     XYZ camlook       = { {0,0,0} };
@@ -325,13 +419,22 @@ int main()
     double zoom = 46.0, zoomdelta = 0.99;
     double contrast = 32, contrast_offset = -0.17;
 
-    const unsigned W = 680, H = 480;
+    //const unsigned W = 680, H = 480;
 
+#ifdef DO_DITHER
+    static unsigned char results[W*H], *p = NULL;
+#else
+    static unsigned      results[W*H], *p = NULL;
+#endif
+    
+    static double        resluma[W*H], *L = NULL;
+    checkCudaErrors(cudaMalloc((void**)&p, sizeof(results))); assert(p!=NULL);
+    checkCudaErrors(cudaMalloc((void**)&L, sizeof(resluma))); assert(L!=NULL);
     for(unsigned frameno=0; frameno<2048; ++frameno)
     {
-        fprintf(stderr, "Begins frame %u; contrast %g, contrast offset %g\n",
-            frameno,contrast,contrast_offset);
-
+        //fprintf(stderr, "Begins frame %u; contrast %g, contrast offset %g\n",
+            //frameno,contrast,contrast_offset);
+	#ifdef DO_DITHER
         gdImagePtr im = gdImageCreate(W,H);
 	
         for(unsigned p=0; p<16; ++p)
@@ -339,75 +442,46 @@ int main()
                                      (int)(Pal[p].d[1]*255+0.5),
                                      (int)(Pal[p].d[2]*255+0.5));
 				     
-
+	#else
+        	gdImagePtr im = gdImageCreateTrueColor(W,H);
+    	#endif
         // Put camera between the central sphere and the walls
-        XYZ campos = { { 0.0, 0.0, 16.0} };
+        //XYZ campos = { { 0.0, 0.0, 16.0} };
         // Rotate it around the center
-        Matrix camrotatematrix, camlookmatrix;
-        camrotatematrix.InitRotate(camangle);
-        camrotatematrix.Transform(campos);
-        camlookmatrix.InitRotate(camlook);
+        //Matrix camrotatematrix, camlookmatrix;
+        //camrotatematrix.InitRotate(camangle);
+        //camrotatematrix.Transform(campos);
+        //camlookmatrix.InitRotate(camlook);
 
         // Determine the contrast ratio for this frame's pixels
-        double thisframe_min = 100;
+        fprintf(stderr, "Begins frame %u; contrast %g, contrast offset %g ",
+            frameno,contrast,contrast_offset); fflush(stderr);
+	
+        RenderScreen<<<Blocks,Threads,0>>> (p,L,
+                                            camangle.d[0],camangle.d[1],camangle.d[2],
+                                            camlook.d[0],camlook.d[1],camlook.d[2],
+                                            zoom,
+                                            contrast,contrast_offset);
+        checkCudaErrors(cudaMemcpy(results, p, sizeof(results), cudaMemcpyDeviceToHost));
+        checkCudaErrors(cudaMemcpy(resluma, L, sizeof(resluma), cudaMemcpyDeviceToHost));
+	double thisframe_min = 100;
         double thisframe_max = -100;
 
       #pragma omp parallel for collapse(2)
-        for(unsigned y=0; y<H; ++y)
+	for(unsigned y=0; y<H; ++y)
             for(unsigned x=0; x<W; ++x)
             {
-                XYZ camray = { { x / double(W) - 0.5,
-                                 y / double(H) - 0.5,
-                                 zoom } };
-                camray.d[0] *= 4.0/3; // Aspect ratio correction
-                camray.Normalise();
-                camlookmatrix.Transform(camray);
-                XYZ campix;
-                RayTrace(campix, campos, camray, MAXTRACE);
-                campix *= 0.5;
-              #pragma omp critical
+        	#pragma omp critical
               {
                 // Update frame luminosity info for automatic contrast adjuster
-                double lum = campix.Luma();
+                double lum = resluma[y*w+x];
                 #pragma omp flush(thisframe_min,thisframe_max)
                 if(lum < thisframe_min) thisframe_min = lum;
                 if(lum > thisframe_max) thisframe_max = lum;
                 #pragma omp flush(thisframe_min,thisframe_max)
               }
                 // Exaggerate the colours to bring contrast better forth
-                campix = (campix + contrast_offset) * contrast;
-                // Clamp, and compensate for display gamma (for dithering)
-                campix.ClampWithDesaturation();
-                XYZ campixG = campix.Pow(Gamma);
-                XYZ qtryG = campixG;
-                // Create candidate for dithering
-                unsigned candlist[CandCount];
-                for(unsigned i=0; i<CandCount; ++i)
-                {
-                    unsigned k = 0;
-                    double b = 1e6;
-                    // Find closest match from palette
-                    for(unsigned j=0; j<16; ++j)
-                    {
-                        double a = (qtryG - PalG[j]).Squared();
-                        if(a < b) { b = a; k = j; }
-                    }
-                    candlist[i] = k;
-                    if(i+1 >= CandCount) break;
-                    // Compensate for error
-                    qtryG += (campixG - PalG[k]);
-                    qtryG.Clamp();
-                }
-                // Order candidates by luminosity
-                // using insertion sort.
-                for(unsigned j=1; j<CandCount; ++j)
-                {
-                    unsigned k = candlist[j], i;
-                    for(i=j; i>=1 && luma[candlist[i-1]] > luma[k]; --i)
-                        candlist[i] = candlist[i-1];
-                    candlist[i] = k;
-                }
-                unsigned colour = candlist[Dither8x8[x & 7][y & 7]];
+             unsigned color = results[y*W+x];
 		//int colour = gdTrueColor((int) campix.d[0]*255,(int) campix.d[1]*255, (int) campix.d[2]*255);
                 gdImageSetPixel(im, x,y, colour);
             }
@@ -452,7 +526,6 @@ int main()
         contrast_offset = (contrast_offset*l + new_contrast_offset*(1.0-l));
         contrast        = (contrast*l + new_contrast*(1.0-l));
     }
-
-//    _asm { mov ax, 0x03; int 0x10 };
-    // Set 80x25 text mode.
+    checkCudaErrors(cudaFree(p));
+    checkCudaErrors(cudaFree(L));
 }
