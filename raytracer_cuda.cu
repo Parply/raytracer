@@ -1,7 +1,7 @@
 /*** header ***/
 
 
-#include <cstdlib>
+#include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
 #include <gd.h>
@@ -39,7 +39,7 @@ struct XYZ
 		*this=N*(v+v)- *this;
 	}
 	// colour
-	inline __device__ __host__ double Luma() const { return d[0]*0.299+d[1]*0.587+d[2]*0.114; }
+	inline __device__ __host__ double Luma() const { return d[0]*0.2126+d[1]*0.7152+d[2]*0.0722; }
 	inline void __device__ __host__ Clamp()
 	{
 		for (unsigned n=0;n<3;++n)
@@ -57,7 +57,7 @@ struct XYZ
 			if (d[n]>1.0) sat = dmin(sat,(l-1.0)/(1.0-d[n]));
 			else if (d[n]<0.0) sat = dmin(sat,l/(1.0-d[n]));
 		if (sat !=1.0)
-		{ *this =(*this-1)*sat+l;Clamp(); }
+		{ *this =(*this-l)*sat+l;Clamp(); }
 	}
 };
 
@@ -81,6 +81,8 @@ struct Matrix
 };
 
 /*** Walls and Spheres ***/
+
+
 extern "C" {
 // Planes/walls represented by a normal vector and a distance
 typedef struct Plane
@@ -134,46 +136,60 @@ const unsigned
 	NumLights = NElems(Lights),
 	MAXTRACE = 6;
 } // extern "C"
+
+
 /*** raytracing ***/
 
-int __device__ RayFindObstacle 
-	(const XYZ &eye, const XYZ &dir, double &HitDist,
-	 int &HitIndex, XYZ & HitLoc, XYZ &HitNormal)
+
+int __device__ RayFindObstacle
+    (const XYZ& eye, const XYZ& dir,
+     double& HitDist, int& HitIndex,
+     XYZ& HitLoc, XYZ& HitNormal)
 {
-	int HitType=-1;
-	{for (unsigned i=0;i<NumSpheres;++i)
-	{
-		XYZ V (eye-Spheres[i].center);
-		double r=Spheres[i].radius,
-		       DV = dir.Dot(V),
-		       D2 = dir.Squared(),
-		       SQ = DV*DV - D2*(V.Squared()-r*r);
-		// if ray coincides with sphere
-		if (SQ<1e-6) continue;
-		double SQt = sqrt(SQ),
-		       Dist = dmin(-DV-SQt, SQt-DV)/D2;
-		if (Dist <1e-6||Dist>=HitDist) continue;
-		HitType=1; HitIndex=i;
-		HitDist=Dist;
-		HitLoc = eye +(dir*HitDist);
-		HitNormal = (HitLoc-Spheres[i].center)*(1/r);
-
-	}}
-	{for (unsigned i=0; i<NumPlanes;++i)
-	{
-		double DV =-Planes[i].normal.Dot(dir);
-		if (DV>1e-6) continue;
-		double D2=Planes[i].normal.Dot(eye),
-		       Dist =(D2+Planes[i].offset)/DV;
-		if (Dist<1e-6||Dist>=HitDist) continue;
-		HitType=0;HitIndex=i;
-		HitDist=Dist;
-		HitLoc=eye+(dir*HitDist);
-		HitNormal=-Planes[i].normal;
-
-	}}
-	return HitType;
-};
+    // Try intersecting the ray with
+    // each object and see which one
+    // produces the closest hit.
+    int HitType = -1;
+   {for(unsigned i=0; i<NumSpheres; ++i)
+    {
+        XYZ V (eye - Spheres[i].center);
+        double r = Spheres[i].radius,
+            DV = dir.Dot(V),
+            D2 = dir.Squared(),
+            SQ = DV*DV
+               - D2*(V.Squared() - r*r);
+        // Does the ray coincide
+        // with the sphere?
+        if(SQ < 1e-6) continue;
+        // Determine where exactly
+        double SQt = sqrt(SQ),
+            Dist = dmin(-DV-SQt,
+                        -DV+SQt) / D2;
+        if(Dist<1e-6 || Dist >= HitDist)
+            continue;
+        HitType = 1; HitIndex = i;
+        HitDist = Dist;
+        HitLoc = eye + (dir * HitDist);
+        HitNormal =
+            (HitLoc - Spheres[i].center)
+                * (1/r);
+    }}
+   {for(unsigned i=0; i<NumPlanes; ++i)
+    {
+        double DV = -Planes[i].normal.Dot(dir);
+        if(DV > -1e-6) continue;
+        double D2 =
+            Planes[i].normal.Dot(eye),
+            Dist = (D2+Planes[i].offset) / DV;
+        if(Dist<1e-6 || Dist>=HitDist)
+            continue;
+        HitType = 0; HitIndex = i;
+        HitDist = Dist;
+        HitLoc = eye + (dir * HitDist);
+        HitNormal = -Planes[i].normal;
+    }}
+    return HitType;
+}
 
 
 bool __device__ RayFindObstacle(const XYZ& eye, const XYZ& dir, const double HitDist)
@@ -217,7 +233,7 @@ void InitAreaLightVectors()
 	// smooth shadows with cloud of lighsources around point
 	for (unsigned i=0;i<NumAreaLightVectors;++i)
 		for (unsigned n=0;n<3;++n)
-			AreaLightVectorsPreinit[i].d[n]= 2.0*(rand()/double(RAND_MAX)-0.5)*0.1;
+			AreaLightVectorsPreinit[i].d[n]= 0;//2.0*(rand()/double(RAND_MAX)-0.5)*0.1;
 }
 
 //Shoot camera rays
@@ -244,10 +260,8 @@ void __device__ RayTrace(XYZ &resultcolour, const XYZ &eye, const XYZ &dir,int k
 				if (DiffuseEffect>1e-3)
 				{
 					double ShadowDist = LightDist-1e-4;
-					XYZ a,b;
-					int q,t = RayFindObstacle(HitLoc+V*1e-4,V, ShadowDist, q, a, b);
-					if (t==-1)
-						DiffuseLight += Lights[i].colour*DiffuseEffect;
+					if(!RayFindObstacle(HitLoc + V*1e-4, V, ShadowDist))
+                        			DiffuseLight += Lights[i].colour * DiffuseEffect;
 				}
 			}
 		if (k>1)
@@ -316,6 +330,8 @@ void InitDither()
 const unsigned W = 1920, H = 1080;
 const unsigned Threads = 256;
 const unsigned Blocks  = (W*H + (Threads-1)) / Threads;
+
+
 
 void __global__ RenderScreen(
 		#ifdef DO_DITHER
@@ -393,8 +409,6 @@ void __global__ RenderScreen(
 	#endif
 	
 }
-
-
 
 int main()
 {
