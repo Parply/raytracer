@@ -4,11 +4,14 @@
 #include <stdio.h>
 #include <math.h>
 #include <gd.h>
+#include <iostream>
+#include <mpi.h>
+
 
 /*** maths ***/
 
 inline double dmin(double a,double b) { return a<b ? a:b; }
-
+inline int imin(int a,int b) { return a<b ? a:b; }
 struct XYZ
 {
 	double d[3];
@@ -262,11 +265,48 @@ void InitDither()
         }
 }
 
+/*** MPI helper functions ***/
+
+void MPE_DECOMP1D(int n, int numprocs,
+		int myid, unsigned *s,unsigned *e)
+{
+	unsigned nlocal = n/numprocs;
+	unsigned st = myid*nlocal;
+	unsigned deficit = n % numprocs;
+	st += imin(myid,deficit);
+	if (myid < deficit)
+		nlocal++;
+	unsigned et = st+nlocal;
+	if (et>n || myid ==(numprocs-1))
+		et=n;
+	*e=et;
+	*s=st;
+	
+
+}
+
 /*** main ***/
 
-int main()
+int main(int argc, char *argv[])
 {
-
+    int id;
+    int ierr;
+    int p;
+    unsigned start,end;
+    ierr = MPI_Init (&argc, &argv);
+ 
+    if ( ierr != 0 )
+    {
+        std::cout << "\n";
+    	std::cout << "Fatal error!\n";
+    	std::cout << "  MPI_Init returned nonzero ierr.\n";
+	exit ( 1 );
+    }
+    ierr = MPI_Comm_size ( MPI_COMM_WORLD, &p );
+    ierr = MPI_Comm_rank ( MPI_COMM_WORLD, &id );
+    
+    MPE_DECOMP1D(2048, p, id, &start, &end);
+    
     InitDither();
     InitAreaLightVectors();
     XYZ camangle      = { {0,0,0} };
@@ -278,8 +318,9 @@ int main()
     double contrast = 32, contrast_offset = -0.17;
 
     const unsigned W = 680, H = 480;
-
-    for(unsigned frameno=0; frameno<2048; ++frameno)
+    
+    
+    for(unsigned frameno=start; frameno<end; ++frameno)
     {
         fprintf(stderr, "Begins frame %u; contrast %g, contrast offset %g\n",
             frameno,contrast,contrast_offset);
@@ -404,7 +445,5 @@ int main()
         contrast_offset = (contrast_offset*l + new_contrast_offset*(1.0-l));
         contrast        = (contrast*l + new_contrast*(1.0-l));
     }
-
-//    _asm { mov ax, 0x03; int 0x10 };
-    // Set 80x25 text mode.
+    MPI_Finalize();
 }
