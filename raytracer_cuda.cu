@@ -28,7 +28,7 @@ struct XYZ
 	do_op(-)
 	#undef do_op
 	XYZ __device__ __host__ operator- () const { XYZ tmp={{-d[0],-d[1],-d[2]}}; return tmp; }
-	XYZ __device__ __host__ Pow(double b) const {XYZ tmp { {pow(d[0],b),pow(d[1],b),pow(d[2],b)}}; return tmp; }
+	XYZ __device__ __host__ Pow(double b) const {XYZ tmp ={ {pow(d[0],b),pow(d[1],b),pow(d[2],b)}}; return tmp; }
 	inline __device__ __host__ double Dot(const XYZ &b) const { return d[0]*b.d[0]+d[1]*b.d[1]+d[2]*b.d[2]; }
 	inline __device__ __host__ double Squared() const { return Dot(*this); }
 	inline __device__ __host__ double Len() const { return sqrt(Squared()); }
@@ -217,7 +217,7 @@ void InitAreaLightVectors()
 	// smooth shadows with cloud of lighsources around point
 	for (unsigned i=0;i<NumAreaLightVectors;++i)
 		for (unsigned n=0;n<3;++n)
-			AreaLightVectors[i].d[n]= 2.0*(rand()/double(RAND_MAX)-0.5)*0.1;
+			AreaLightVectorsPreinit[i].d[n]= 2.0*(rand()/double(RAND_MAX)-0.5)*0.1;
 }
 
 //Shoot camera rays
@@ -231,7 +231,7 @@ void __device__ RayTrace(XYZ &resultcolour, const XYZ &eye, const XYZ &dir,int k
 	if (HitType!=-1)
 	{
 		XYZ DiffuseLight={{0,0,0}},SpecularLight={{0,0,0}};
-		XYZ Pigment {{1,0.98,0.98}};
+		XYZ Pigment ={{1,0.98,0.98}};
 		for (unsigned i=0;i<NumLights;++i)
 			for (unsigned j=0;j<NumAreaLightVectors;++j)
 			{
