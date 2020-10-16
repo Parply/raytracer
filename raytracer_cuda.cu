@@ -208,8 +208,9 @@ bool __device__ RayFindObstacle(const XYZ& eye, const XYZ& dir, const double Hit
 }
 
 //extern "C"{
-const unsigned NumAreaLightVectors=20;
-XYZ AreaLightVectors[NumAreaLightVectors];
+const unsigned NumAreaLightVectors = 1;
+__device__ __constant__ XYZ AreaLightVectors[NumAreaLightVectors];
+XYZ AreaLightVectorsPreinit[NumAreaLightVectors];
 //}//extern "C"
 void InitAreaLightVectors()
 {
@@ -320,8 +321,9 @@ void __global__ RenderScreen(
 		#ifdef DO_DITHER
 		unsigned char* results,
 		#else
-		unsigned* results
+		unsigned* results,
 		#endif
+		double *resluma,
 		double camanglex,double camangley,double camanglez,
                 double camlookx,double camlooky,double camlookz,
                 double zoom,
@@ -342,13 +344,13 @@ void __global__ RenderScreen(
                      	y / double(H) - 0.5,
                      	zoom } };
     	camray.d[0] *= double(W)/double(H); // Aspect ratio correction
-	camray.Normalize();
+	camray.Normalise();
     	camlookmatrix.Transform(camray);
     	XYZ campix;
     	RayTrace(campix, campos, camray, MAXTRACE);
     	campix *= 0.5;
     	resluma[y*W+x] = campix.Luma();
-    	// Exaggerate the colors to bring contrast better forth
+    	// Exaggerate the colours to bring contrast better forth
     	campix = (campix + contrast_offset) * contrast;
     	// Clamp, and compensate for display gamma (for dithering)
     	campix.ClampWithDesaturation();
@@ -389,7 +391,7 @@ void __global__ RenderScreen(
                    + (unsigned(campixG.d[1] * 255) << 8)
                    + (unsigned(campixG.d[2] * 255) << 0);
 	#endif
-	}
+	
 }
 
 
@@ -399,7 +401,7 @@ int main()
 
     InitAreaLightVectors();
     #define PreInit(symbol, from) checkCudaErrors(cudaMemcpyToSymbol(symbol, &from, sizeof(from)))
-    PreInit(ArealightVectors, ArealightVectorsPreinit);
+    PreInit(AreaLightVectors, AreaLightVectorsPreinit);
     #ifdef DO_DITHER
     InitDither();
     PreInit(PalG, PalG_init);
@@ -474,14 +476,14 @@ int main()
         	#pragma omp critical
               {
                 // Update frame luminosity info for automatic contrast adjuster
-                double lum = resluma[y*w+x];
+                double lum = resluma[y*W+x];
                 #pragma omp flush(thisframe_min,thisframe_max)
                 if(lum < thisframe_min) thisframe_min = lum;
                 if(lum > thisframe_max) thisframe_max = lum;
                 #pragma omp flush(thisframe_min,thisframe_max)
               }
                 // Exaggerate the colours to bring contrast better forth
-             unsigned color = results[y*W+x];
+             unsigned colour = results[y*W+x];
 		//int colour = gdTrueColor((int) campix.d[0]*255,(int) campix.d[1]*255, (int) campix.d[2]*255);
                 gdImageSetPixel(im, x,y, colour);
             }
